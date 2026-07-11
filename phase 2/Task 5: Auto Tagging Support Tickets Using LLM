@@ -1,0 +1,121 @@
+import json
+import os
+from openai import OpenAI
+
+# =====================================================================
+# 1. Configuration & Client Setup
+# =====================================================================
+# Setup client. Replace base_url and api_key depending on your provider 
+# (e.g., Groq, OpenAI, or local Ollama/LM Studio instance).
+client = OpenAI(
+    base_url="https://api.openai.com/v1",  # Change to your target LLM endpoint
+    api_key=os.environ.get("OPENAI_API_KEY", "your-api-key-here")
+)
+
+MODEL_NAME = "gpt-4o-mini" # Or an open-source equivalent like "llama3-8b-instruct"
+
+# Allowed tags for the support system
+ALLOWED_TAGS = ["Billing", "Technical Support", "Account Access", "Feature Request", "Bug Report", "Security"]
+
+# Sample dataset mimicking free-text customer support tickets
+MOCK_TICKETS = [
+    "I'm trying to log in but it keeps saying invalid password, and the reset link emailed to me isn't loading.",
+    "My card was charged twice for this month's premium subscription fee. I need an immediate refund for the overcharge.",
+    "The application keeps crashing every single time I navigate to the analytics dashboard tab on iOS."
+]
+
+# =====================================================================
+# 2. Define Prompts (System Prompt handles the JSON constraints)
+# =====================================================================
+SYSTEM_PROMPT = f"""
+You are an advanced support ticket classifier. Analyze the provided customer support ticket text.
+Classify it by assigning the top 3 most probable tags from this strict list: {ALLOWED_TAGS}.
+
+You must return your response EXCLUSIVELY as a valid JSON object matching this structure:
+{{
+    "classification": [
+        {{"tag": "Tag Name 1", "confidence_score": 0.95}},
+        {{"tag": "Tag Name 2", "confidence_score": 0.65}},
+        {{"tag": "Tag Name 3", "confidence_score": 0.20}}
+    ]
+}}
+Order the array strictly by highest confidence_score first. Do not add any markdown formatting, thoughts, or extra text.
+"""
+
+# Few-shot learning examples to demonstrate expected reasoning/scoring dynamics
+FEW_SHOT_EXAMPLES = """
+Example 1:
+Ticket: "Can you add a dark mode switch to the user settings page? My eyes get strained at night."
+Output:
+{
+    "classification": [
+        {"tag": "Feature Request", "confidence_score": 0.98},
+        {"tag": "Technical Support", "confidence_score": 0.30},
+        {"tag": "Account Access", "confidence_score": 0.05}
+    ]
+}
+
+Example 2:
+Ticket: "Someone unauthorized gained access to my profile and modified my payment information."
+Output:
+{
+    "classification": [
+        {"tag": "Security", "confidence_score": 0.99},
+        {"tag": "Account Access", "confidence_score": 0.85},
+        {"tag": "Billing", "confidence_score": 0.70}
+    ]
+}
+"""
+
+# =====================================================================
+# 3. Execution Functions
+# =====================================================================
+def get_llm_classification(user_prompt):
+    """Sends prompt request to LLM and safely parses JSON response."""
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,  # Low temperature for high determination accuracy
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        return {"error": str(e), "raw_response": response.choices[0].message.content if 'response' in locals() else ""}
+
+def run_experiment():
+    print(f"🎬 Starting Auto-Tagging Experiment using model: {MODEL_NAME}\n" + "="*70)
+    
+    for idx, ticket in enumerate(MOCK_TICKETS, 1):
+        print(f"\n🎫 [Ticket #{idx}]: \"{ticket}\"")
+        
+        # --- Technique A: Zero-Shot Learning ---
+        zero_shot_prompt = f"Ticket: \"{ticket}\"\nOutput:"
+        zero_shot_res = get_llm_classification(zero_shot_prompt)
+        
+        # --- Technique B: Few-Shot Learning ---
+        few_shot_prompt = f"{FEW_SHOT_EXAMPLES}\nTicket: \"{ticket}\"\nOutput:"
+        few_shot_res = get_llm_classification(few_shot_prompt)
+        
+        # --- Print Performance Side-by-Side ---
+        print("\n  👉 Zero-Shot Target Output:")
+        render_tags(zero_shot_res)
+            
+        print("\n  👉 Few-Shot Target Output:")
+        render_tags(few_shot_res)
+        print("-" * 70)
+
+def render_tags(result_json):
+    """Helper layout printer for extracted JSON arrays."""
+    if "error" in result_json:
+        print(f"     ❌ Error parsing LLM outputs: {result_json['error']}")
+        return
+        
+    for item in result_json.get("classification", []):
+        print(f"     • {item['tag']:<20} | Confidence: {item['confidence_score']:.2f}")
+
+if __name__ == "__main__":
+    run_experiment()
