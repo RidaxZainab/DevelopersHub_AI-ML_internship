@@ -1,0 +1,79 @@
+import numpy as np
+from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
+from sklearn.metrics import accuracy_score, f1_score
+
+def compute_metrics(eval_pred):
+    """Computes accuracy and macro F1-score for evaluation."""
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=-1)
+    
+    acc = accuracy_score(labels, predictions)
+    f1 = f1_score(labels, predictions, average="macro")
+    
+    return {"accuracy": acc, "f1": f1}
+
+def main():
+    MODEL_NAME = "bert-base-uncased"
+    OUTPUT_DIR = "./bert_news_classifier"
+    
+    print("📥 Loading AG News dataset...")
+    # AG News has 4 classes: 1-World, 2-Sports, 3-Business, 4-Sci/Tech
+    dataset = load_dataset("ag_news")
+    
+    # Optional: Downsample for faster training if resources are limited
+    # dataset['train'] = dataset['train'].shuffle(seed=42).select(range(10000))
+    # dataset['test'] = dataset['test'].shuffle(seed=42).select(range(2000))
+
+    print("🪙 Initializing Tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+    def tokenize_function(examples):
+        # 'text' contains the headline/article snippet
+        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=128)
+
+    print("⚙️ Preprocessing and tokenizing dataset...")
+    tokenized_datasets = dataset.map(tokenize_function, batched=True)
+
+    print("🏗️ Loading Pre-trained BERT Model...")
+    # AG News has 4 target categories
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=4)
+
+    training_args = TrainingArguments(
+        output_dir=OUTPUT_DIR,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        learning_rate=2e-5,
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=16,
+        num_train_epochs=3,
+        weight_decay=0.01,
+        load_best_model_at_end=True,
+        metric_for_best_model="f1",
+        logging_dir="./logs",
+        logging_steps=100,
+        report_to="none" # Prevents third-party logging prompts
+    )
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_datasets["train"],
+        eval_dataset=tokenized_datasets["test"],
+        compute_metrics=compute_metrics,
+    )
+
+    print("🚀 Starting fine-tuning...")
+    trainer.train()
+
+    print("📊 Evaluating model performance...")
+    eval_results = trainer.evaluate()
+    print(f"\nFinal Evaluation Results:\n{eval_results}")
+
+    print(f"💾 Saving model and tokenizer to '{OUTPUT_DIR}'...")
+    trainer.save_model(OUTPUT_DIR)
+    tokenizer.save_pretrained(OUTPUT_DIR)
+    print("✅ Training complete!")
+
+if __name__ == "__main__":
+    main()
